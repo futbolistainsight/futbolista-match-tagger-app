@@ -497,7 +497,7 @@ const STATS_CAT_COLOR = {construccion:'#5A96FF', progresion:'#4ADE80', finalizac
    ============================================================ */
 const emptySession = ()=>({
   id:null, player:'',team:'',rival:'',competicion:'',date:new Date().toISOString().slice(0,10),position:'',
-  rating:'', attrs:{defensa:5,ataque:5,pase:5,velocidad:5,concentracion:5,general:5},
+  rating:'', minutesPlayed:'', attrs:{defensa:5,ataque:5,pase:5,velocidad:5,concentracion:5,general:5},
   fortalezas:[''], debilidades:[''], photo:'',
 });
 function cleanList(arr){ return (arr||[]).map(s=>(s||'').trim()).filter(Boolean); }
@@ -806,6 +806,7 @@ function openAnalysis(record){
     id:record.id, player:record.player, team:record.team, rival:record.rival,
     competicion:record.competicion||'', date:record.date, position:record.position,
     rating: record.rating!=null ? record.rating : '',
+    minutesPlayed: record.minutesPlayed!=null ? record.minutesPlayed : '',
     attrs: record.attrs ? {...record.attrs} : {defensa:5,ataque:5,pase:5,velocidad:5,concentracion:5,general:5},
     fortalezas: (record.fortalezas&&record.fortalezas.length) ? record.fortalezas.slice() : [''],
     debilidades: (record.debilidades&&record.debilidades.length) ? record.debilidades.slice() : [''],
@@ -824,7 +825,7 @@ function finishAndSave(){
   const id = s.id || ('an_'+Date.now());
   const record = {
     id, player:s.player, team:s.team, rival:s.rival, competicion:s.competicion, date:s.date, position:s.position,
-    rating: s.rating, attrs: {...s.attrs}, fortalezas: cleanList(s.fortalezas), debilidades: cleanList(s.debilidades),
+    rating: s.rating, minutesPlayed: s.minutesPlayed, attrs: {...s.attrs}, fortalezas: cleanList(s.fortalezas), debilidades: cleanList(s.debilidades),
     photo: s.photo||'', log: state.log, savedAt: Date.now(),
   };
   const idx = state.analyses.findIndex(a=>a.id===id);
@@ -934,13 +935,14 @@ const GOAL_ACTION_IDS = ['remate_area','remate_fuera_area','remate_cabeza','vole
 function aggregatePlayerStats(list){
   const attrKeys = ['defensa','ataque','pase','velocidad','concentracion','general'];
   const attrSums = {}; attrKeys.forEach(k=>attrSums[k]=0);
-  let attrCount=0, ratingSum=0, ratingCount=0, totalActions=0, goals=0, assists=0;
+  let attrCount=0, ratingSum=0, ratingCount=0, totalActions=0, goals=0, assists=0, totalMinutes=0;
   const counts = {};
 
   list.forEach(a=>{
     const log = a.log||[];
     totalActions += log.length;
     if(a.rating!=null && a.rating!==''){ ratingSum += Number(a.rating)||0; ratingCount++; }
+    if(a.minutesPlayed!=null && a.minutesPlayed!==''){ totalMinutes += Number(a.minutesPlayed)||0; }
     if(a.attrs){ attrKeys.forEach(k=>{ attrSums[k] += Number(a.attrs[k])||0; }); attrCount++; }
     log.forEach(l=>{
       const cat = reportCategoryOf(l.id);
@@ -957,7 +959,7 @@ function aggregatePlayerStats(list){
   const avgAttrs = {};
   attrKeys.forEach(k=>{ avgAttrs[k] = attrCount ? Math.round((attrSums[k]/attrCount)*10)/10 : 0; });
 
-  return { matches:list.length, totalActions, avgRating, avgAttrs, counts, goals, assists };
+  return { matches:list.length, totalActions, avgRating, avgAttrs, counts, goals, assists, totalMinutes };
 }
 
 /* ============================================================
@@ -1218,6 +1220,7 @@ function renderPlayerStats(){
 
       <div class="dash-stats" style="margin-top:6px;">
         <div class="stat-card"><b>${agg.matches}</b><span>Partidos</span></div>
+        <div class="stat-card"><b>${agg.totalMinutes}</b><span>Minutos jugados</span></div>
         <div class="stat-card"><b>${agg.totalActions}</b><span>Acciones totales</span></div>
         <div class="stat-card"><b>${agg.avgRating!=null?agg.avgRating:'—'}</b><span>Nota media</span></div>
         <div class="stat-card"><b>${agg.goals+agg.assists}</b><span>Goles + asistencias</span></div>
@@ -1248,7 +1251,7 @@ function renderPlayerStats(){
           <div class="analysis-row">
             <div class="a-info">
               <div class="a-player">${fmtDate(a.date)} · vs ${a.rival||'—'}</div>
-              <div class="a-meta">${a.competicion||'—'} · ${(a.log||[]).length} acciones${a.rating!=null&&a.rating!==''?' · nota '+a.rating:''}</div>
+              <div class="a-meta">${a.competicion||'—'} · ${(a.log||[]).length} acciones${a.minutesPlayed!=null&&a.minutesPlayed!==''?' · '+a.minutesPlayed+"'":''}${a.rating!=null&&a.rating!==''?' · nota '+a.rating:''}</div>
             </div>
             <button class="row-btn" data-open-btn="${a.id}">Ver</button>
           </div>
@@ -1623,11 +1626,17 @@ function renderRating(){
       <h1>Valoración<br><span class="accent">del analista</span></h1>
       <p class="sub">Estos datos se usan solo para el informe en PDF: nota global, perfil por atributos y observaciones cualitativas.</p>
 
-      <div class="field">
-        <label>Nota del partido (0–100)</label>
-        <input id="rt-rating" type="number" min="0" max="100" placeholder="Ej. 80" value="${s.rating}">
-        ${ratingNum!==''?`<div class="rt-rating-preview">${ratingNum} / 100 · <b>${ratingLabel(ratingNum)}</b></div>`:''}
+      <div class="field-row">
+        <div class="field">
+          <label>Nota del partido (0–100)</label>
+          <input id="rt-rating" type="number" min="0" max="100" placeholder="Ej. 80" value="${s.rating}">
+        </div>
+        <div class="field">
+          <label>Minutos jugados</label>
+          <input id="rt-minutes" type="number" min="0" max="130" placeholder="Ej. 90" value="${s.minutesPlayed}">
+        </div>
       </div>
+      ${ratingNum!==''?`<div class="rt-rating-preview" style="margin-bottom:16px;">${ratingNum} / 100 · <b>${ratingLabel(ratingNum)}</b></div>`:''}
 
       <div class="field">
         <label>Perfil de rendimiento (escala 0–10)</label>
@@ -1675,6 +1684,7 @@ function renderRating(){
   root.querySelector('#back-log').onclick = ()=>{state.screen='log'; render();};
 
   root.querySelector('#rt-rating').oninput = e=>{state.session.rating = e.target.value; render();};
+  root.querySelector('#rt-minutes').oninput = e=>{state.session.minutesPlayed = e.target.value;};
 
   root.querySelectorAll('[data-attr]').forEach(inp=>{
     inp.oninput = e=>{
@@ -1708,9 +1718,13 @@ function renderRating(){
    ============================================================ */
 function exportCSV(){
   const s = state.session;
+  const esc = v=>`"${(v+'').replace(/"/g,'""')}"`;
+  let csv = ['jugador','minutos_jugados','nota'].map(esc).join(';')+'\n';
+  csv += [s.player||'', s.minutesPlayed||'', s.rating!=null?s.rating:''].map(esc).join(';')+'\n\n';
+
   const header = ['minuto','fase','accion','resultado'];
   const rows = state.log.map(r=>[fmtClock(r.minute).replace("'",""), r.mode==='conBalon'?'Con balon':'Sin balon', r.label, r.result||'']);
-  let csv = header.join(';')+'\n' + rows.map(r=>r.map(v=>`"${(v+'').replace(/"/g,'""')}"`).join(';')).join('\n');
+  csv += header.join(';')+'\n' + rows.map(r=>r.map(v=>`"${(v+'').replace(/"/g,'""')}"`).join(';')).join('\n');
   const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1731,9 +1745,9 @@ function downloadCSV(csv, filename){
 
 function exportSeasonCSV(list, agg, player, compLabel){
   const esc = v=>`"${(v+'').replace(/"/g,'""')}"`;
-  let csv = ['Jugador','Competición','Partidos','Acciones totales','Nota media','Goles','Asistencias']
+  let csv = ['Jugador','Competición','Partidos','Minutos jugados','Acciones totales','Nota media','Goles','Asistencias']
     .map(esc).join(';')+'\n';
-  csv += [player, compLabel||'Todas', agg.matches, agg.totalActions, agg.avgRating!=null?agg.avgRating:'', agg.goals, agg.assists]
+  csv += [player, compLabel||'Todas', agg.matches, agg.totalMinutes, agg.totalActions, agg.avgRating!=null?agg.avgRating:'', agg.goals, agg.assists]
     .map(esc).join(';')+'\n\n';
 
   csv += ['accion','categoria','total','acierto','error','pct_acierto'].map(esc).join(';')+'\n';
@@ -1743,8 +1757,8 @@ function exportSeasonCSV(list, agg, player, compLabel){
   });
   csv += rows.map(r=>r.map(esc).join(';')).join('\n')+'\n\n';
 
-  csv += ['fecha','rival','competicion','nota','acciones'].map(esc).join(';')+'\n';
-  csv += list.map(a=>[a.date, a.rival||'', a.competicion||'', a.rating!=null?a.rating:'', (a.log||[]).length].map(esc).join(';')).join('\n');
+  csv += ['fecha','rival','competicion','minutos_jugados','nota','acciones'].map(esc).join(';')+'\n';
+  csv += list.map(a=>[a.date, a.rival||'', a.competicion||'', a.minutesPlayed!=null?a.minutesPlayed:'', a.rating!=null?a.rating:'', (a.log||[]).length].map(esc).join(';')).join('\n');
 
   downloadCSV(csv, `temporada_${(player||'jugador').replace(/\s+/g,'_')}.csv`);
 }
@@ -1856,7 +1870,7 @@ function exportPDF(){
   doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(...INK);
   doc.text(s.player||'Jugador', nameX, rowBY+4);
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...INK_DIM);
-  const metaLine = [s.position, s.competicion, fmtDateLong(s.date)].filter(Boolean).join('  ·  ');
+  const metaLine = [s.position, s.competicion, fmtDateLong(s.date), (s.minutesPlayed!=null&&s.minutesPlayed!=='')?`${s.minutesPlayed}'  jugados`:null].filter(Boolean).join('  ·  ');
   doc.text(metaLine, nameX, rowBY+16);
 
   const totalActions = state.log.length;
@@ -2106,7 +2120,7 @@ function exportSeasonPDF(list, agg, player, rosterInfo, compLabel){
   doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(...INK);
   doc.text(player||'Jugador', nameX, rowBY+4);
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...INK_DIM);
-  const metaLine = [rosterInfo&&rosterInfo.position, compLabel, periodLabelFromList(list)].filter(Boolean).join('  ·  ');
+  const metaLine = [rosterInfo&&rosterInfo.position, compLabel, periodLabelFromList(list), agg.totalMinutes?`${agg.totalMinutes}' jugados`:null].filter(Boolean).join('  ·  ');
   doc.text(metaLine, nameX, rowBY+16, {maxWidth: contentW-260});
 
   const statBlockX = margin+contentW-190;
@@ -2261,7 +2275,8 @@ function exportSeasonPDF(list, agg, player, rosterInfo, compLabel){
       doc.text(fmtDate(a.date), margin+16, ry+4.5);
       doc.text(`vs ${a.rival||'—'}`, margin+80, ry+4.5, {maxWidth:180});
       doc.setTextColor(...INK_FAINT);
-      doc.text(a.competicion||'—', margin+280, ry+4.5, {maxWidth:110});
+      doc.text(a.competicion||'—', margin+280, ry+4.5, {maxWidth:100});
+      doc.text(a.minutesPlayed!=null&&a.minutesPlayed!==''?`${a.minutesPlayed}'`:'—', margin+contentW-130, ry+4.5, {align:'right'});
       doc.text(`${(a.log||[]).length} acc.`, margin+contentW-80, ry+4.5, {align:'right'});
       doc.setTextColor(...GOLD);
       doc.text(a.rating!=null&&a.rating!==''?String(a.rating):'—', margin+contentW-16, ry+4.5, {align:'right'});
