@@ -356,10 +356,12 @@ const GENERIC = {
     {id:'presion', label:'Presión', result:['Acierto','Error']},
     {id:'cobertura', label:'Cobertura', result:['Acierto','Error']},
     {id:'marcaje', label:'Marcaje (hombre/zonal)', result:['Acierto','Error'], key:'M'},
-    {id:'achique', label:'Achique de espacio', result:['Acierto','Error']},
+    {id:'achique', label:'Temporización', result:['Acierto','Error']},
     {id:'repliegue', label:'Repliegue', result:['Acierto','Error']},
-    {id:'basculacion', label:'Basculación', result:['Acierto','Error']},
-    {id:'quite', label:'Quite / robo de balón', result:['Acierto','Error']},
+    {id:'basculacion', label:'Posicionamiento', result:['Acierto','Error']},
+    {id:'quite', label:'Recuperación', result:['Acierto','Error']},
+    {id:'saltos', label:'Saltos', result:['Acierto','Error']},
+    {id:'bloqueo_carreras', label:'Bloqueo carreras', result:['Acierto','Error']},
   ],
   sinBalonOf: [
     {id:'desmarque_apoyo', label:'Desmarque de apoyo', result:['Acierto','Error']},
@@ -484,6 +486,7 @@ const REPORT_CATEGORY = {
   entrada:'defensivas', barrida:'defensivas', despeje_pie:'defensivas', despeje_cabeza:'defensivas',
   bloqueo_tiro:'defensivas', duelo_individual:'defensivas', duelo_aereo:'defensivas', marcaje:'defensivas',
   achique:'defensivas', repliegue:'defensivas', basculacion:'defensivas', cobertura:'defensivas',
+  saltos:'defensivas', bloqueo_carreras:'defensivas',
   linea_defensiva:'defensivas', duelo_banda:'defensivas', falta_cometida:'defensivas',
   falta_recibida:'defensivas', mano:'defensivas', amarilla:'defensivas', roja:'defensivas',
 };
