@@ -494,7 +494,7 @@ const REPORT_CATEGORY = {
   linea_defensiva:'defensivas', duelo_banda:'defensivas', falta_cometida:'defensivas',
   falta_recibida:'defensivas', mano:'defensivas', amarilla:'defensivas', roja:'defensivas',
 };
-function reportCategoryOf(id){ return REPORT_CATEGORY[id] || 'defensivas'; }
+function reportCategoryOf(id, hint){ return REPORT_CATEGORY[id] || hint || 'defensivas'; }
 const REPORT_CAT_ORDER = ['construccion','progresion','finalizacion','defensivas'];
 const REPORT_CAT_LABEL = {construccion:'CONSTRUCCIÓN', progresion:'PROGRESIÓN', finalizacion:'FINALIZACIÓN', defensivas:'DEFENSIVAS'};
 const STATS_CAT_COLOR = {construccion:'#5A96FF', progresion:'#4ADE80', finalizacion:'#FAE04B', defensivas:'#E3543F'};
@@ -826,8 +826,8 @@ function openAnalysis(record){
   render();
 }
 
-function finishAndSave(){
-  stopClock();
+/* guarda (o actualiza) el análisis en curso sin salir de la pantalla */
+function persistAnalysis(){
   const s = state.session;
   const id = s.id || ('an_'+Date.now());
   const record = {
@@ -839,8 +839,69 @@ function finishAndSave(){
   if(idx>=0) state.analyses[idx]=record; else state.analyses.push(record);
   state.session.id = id;
   saveArray('futbolista-analyses', state.analyses);
+}
+
+function finishAndSave(){
+  stopClock();
+  persistAnalysis();
   state.screen = 'dashboard';
   render();
+}
+
+/* ============================================================
+   COPIA DE SEGURIDAD: exportar / importar datos (JSON)
+   ============================================================ */
+function exportBackup(){
+  const data = {
+    app:'futbolista-match-tagger', version:1, exportedAt:new Date().toISOString(),
+    roster: state.roster, analyses: state.analyses, labelOverrides: state.labelOverrides,
+  };
+  const blob = new Blob([JSON.stringify(data)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `futbolista_copia_${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* fusiona datos externos con los locales; un análisis se omite si ya existe
+   el mismo id o ya hay uno del mismo jugador en la misma fecha */
+function importBackupData(data){
+  if(!data || typeof data!=='object' || !Array.isArray(data.analyses)) throw new Error('el archivo no tiene el formato esperado');
+  let added=0, skipped=0, newPlayers=0;
+  const keys = new Set(state.analyses.map(a=>playerKey(a.player)+'|'+a.date));
+  const ids = new Set(state.analyses.map(a=>a.id));
+  data.analyses.forEach(a=>{
+    if(!a || !a.id || !a.player || !a.date){ skipped++; return; }
+    const key = playerKey(a.player)+'|'+a.date;
+    if(ids.has(a.id) || keys.has(key)){ skipped++; return; }
+    state.analyses.push(a); ids.add(a.id); keys.add(key); added++;
+  });
+  (Array.isArray(data.roster)?data.roster:[]).forEach(p=>{
+    if(!p || !p.name) return;
+    if(state.roster.some(r=>r.id===p.id || playerKey(r.name)===playerKey(p.name))) return;
+    state.roster.push(p); newPlayers++;
+  });
+  if(data.labelOverrides && typeof data.labelOverrides==='object'){
+    Object.keys(data.labelOverrides).forEach(k=>{ if(!(k in state.labelOverrides)) state.labelOverrides[k]=data.labelOverrides[k]; });
+    saveOverrides();
+  }
+  saveArray('futbolista-analyses', state.analyses);
+  saveArray('futbolista-roster', state.roster);
+  return {added, skipped, newPlayers};
+}
+
+function importBackupFile(file){
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const res = importBackupData(JSON.parse(reader.result));
+      alert(`Importación completada.\n\nAnálisis añadidos: ${res.added}\nOmitidos (ya existían): ${res.skipped}\nJugadores nuevos: ${res.newPlayers}`);
+      render();
+    }catch(e){ alert('No se pudo importar el archivo: '+e.message); }
+  };
+  reader.onerror = ()=>alert('No se pudo leer el archivo.');
+  reader.readAsText(file);
 }
 
 function deleteAnalysis(id){
@@ -961,7 +1022,7 @@ function aggregatePlayerStats(list){
     if(a.minutesPlayed!=null && a.minutesPlayed!==''){ totalMinutes += Number(a.minutesPlayed)||0; }
     if(a.attrs){ attrKeys.forEach(k=>{ attrSums[k] += Number(a.attrs[k])||0; }); attrCount++; }
     log.forEach(l=>{
-      const cat = reportCategoryOf(l.id);
+      const cat = reportCategoryOf(l.id, l.cat);
       if(!counts[l.label]) counts[l.label] = {total:0,pos:0,neg:0,cat};
       counts[l.label].total++;
       if(l.tag==='pos') counts[l.label].pos++;
@@ -1022,9 +1083,14 @@ function renderDashboard(){
         <button class="dash-primary" id="btn-new-analysis">+ Nuevo análisis</button>
         <button class="dash-secondary" id="btn-new-player">+ Dar de alta jugador</button>
       </div>
-      <div class="dash-actions" style="margin-bottom:20px;">
+      <div class="dash-actions" style="margin-bottom:10px;">
         <button class="dash-secondary" id="btn-player-stats">Estadísticas por jugador</button>
         <button class="dash-secondary" id="btn-edit-labels">Editar nombres</button>
+      </div>
+      <div class="dash-actions" style="margin-bottom:20px;">
+        <button class="dash-secondary" id="btn-export-backup">Exportar copia</button>
+        <button class="dash-secondary" id="btn-import-backup">Importar datos</button>
+        <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
       </div>
 
       <div class="section-block">
@@ -1071,6 +1137,14 @@ function renderDashboard(){
   root.querySelector('#btn-new-player').onclick = ()=>{state.screen='rosterForm'; render();};
   root.querySelector('#btn-player-stats').onclick = ()=>openPlayerStats('');
   root.querySelector('#btn-edit-labels').onclick = ()=>{state.screen='editLabels'; render();};
+  root.querySelector('#btn-export-backup').onclick = exportBackup;
+  const importInput = root.querySelector('#import-file');
+  root.querySelector('#btn-import-backup').onclick = ()=>importInput.click();
+  importInput.onchange = e=>{
+    const file = e.target.files && e.target.files[0];
+    if(file) importBackupFile(file);
+    e.target.value = '';
+  };
 
   root.querySelectorAll('[data-open-btn]').forEach(btn=>{
     btn.onclick = (e)=>{
@@ -1736,7 +1810,7 @@ function renderRating(){
   root.querySelector('#add-fortaleza').onclick = ()=>{ state.session.fortalezas.push(''); render(); };
   root.querySelector('#add-debilidad').onclick = ()=>{ state.session.debilidades.push(''); render(); };
 
-  root.querySelector('#gen-pdf-btn').onclick = exportPDF;
+  root.querySelector('#gen-pdf-btn').onclick = ()=>{ persistAnalysis(); exportPDF(); };
   root.querySelector('#save-only-btn').onclick = finishAndSave;
 }
 
@@ -1987,7 +2061,7 @@ function exportPDF(){
   /* ---- fila 3: acciones registradas (agrupadas por categoría) ---- */
   const counts = {};
   state.log.forEach(l=>{
-    const cat = reportCategoryOf(l.id);
+    const cat = reportCategoryOf(l.id, l.cat);
     if(!counts[l.label]) counts[l.label] = {total:0,pos:0,neg:0,cat};
     counts[l.label].total++;
     if(l.tag==='pos') counts[l.label].pos++;
