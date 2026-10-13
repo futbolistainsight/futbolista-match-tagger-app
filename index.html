@@ -341,6 +341,7 @@ const GENERIC = {
     {id:'volea', label:'Volea', result:['Gol','Parada','Fuera','Bloqueado']},
     {id:'definicion_1v1', label:'Definición 1v1 portero', result:['Gol','Parada']},
     {id:'penalti', label:'Penalti', result:['Gol','Fallado']},
+    {id:'gol', label:'Gol', result:null, forced:'pos', key:'X'},
     {id:'asistencia', label:'Asistencia', result:null, forced:'pos', key:'S'},
   ],
   sinBalonDef: [
@@ -362,16 +363,18 @@ const GENERIC = {
     {id:'quite', label:'Recuperación', result:['Acierto','Error']},
     {id:'saltos', label:'Saltos', result:['Acierto','Error']},
     {id:'bloqueo_carreras', label:'Bloqueo carreras', result:['Acierto','Error']},
+    {id:'defensa_area', label:'Defensa de área', result:['Acierto','Error']},
   ],
   sinBalonOf: [
     {id:'desmarque_apoyo', label:'Desmarque de apoyo', result:['Acierto','Error']},
     {id:'desmarque_ruptura', label:'Desmarque de ruptura', result:['Acierto','Error']},
     {id:'desmarque_profundidad', label:'Desmarque en profundidad', result:['Acierto','Error']},
     {id:'fijacion_rival', label:'Fijación de rival', result:['Acierto','Error']},
-    {id:'generacion_espacios', label:'Generación de espacios', result:['Acierto','Error']},
+    {id:'linea_pase', label:'Línea de pase', result:['Acierto','Fallo']},
     {id:'tercer_hombre', label:'Tercer hombre', result:['Acierto','Error']},
-    {id:'ocupacion_espacios', label:'Ocupación de espacios libres', result:['Acierto','Error']},
+    {id:'vigilancia_ofensiva', label:'Vigilancia ofensiva', result:['Acierto','Error']},
     {id:'temporizacion', label:'Temporización de carrera', result:['Acierto','Error']},
+    {id:'desmarque_area', label:'Desmarque de área', result:['Acierto','Error']},
   ],
   transicion: [
     {id:'transicion_of', label:'Transición ofensiva', result:['Acierto','Error']},
@@ -478,15 +481,16 @@ const REPORT_CATEGORY = {
   quite:'progresion', interceptacion:'progresion', anticipacion:'progresion',
   desmarque_banda:'progresion', fijar_central:'progresion', desmarque_profundidad_del:'progresion',
   llegada_area:'progresion', conduccion_ruptura:'progresion', overlap:'progresion',
+  linea_pase:'progresion', vigilancia_ofensiva:'progresion', desmarque_area:'progresion',
 
   remate_area:'finalizacion', remate_fuera_area:'finalizacion', remate_cabeza:'finalizacion',
   volea:'finalizacion', definicion_1v1:'finalizacion', penalti:'finalizacion',
-  asistencia:'finalizacion', disparo_lejano:'finalizacion',
+  asistencia:'finalizacion', disparo_lejano:'finalizacion', gol:'finalizacion',
 
   entrada:'defensivas', barrida:'defensivas', despeje_pie:'defensivas', despeje_cabeza:'defensivas',
   bloqueo_tiro:'defensivas', duelo_individual:'defensivas', duelo_aereo:'defensivas', marcaje:'defensivas',
   achique:'defensivas', repliegue:'defensivas', basculacion:'defensivas', cobertura:'defensivas',
-  saltos:'defensivas', bloqueo_carreras:'defensivas',
+  saltos:'defensivas', bloqueo_carreras:'defensivas', defensa_area:'defensivas',
   linea_defensiva:'defensivas', duelo_banda:'defensivas', falta_cometida:'defensivas',
   falta_recibida:'defensivas', mano:'defensivas', amarilla:'defensivas', roja:'defensivas',
 };
@@ -757,7 +761,7 @@ function logAction(action, resultLabel){
   if(action.forced) tag = action.forced;
   else if(resultLabel){
     if(['Completado','Ganado','Ganada','Superada','A puerta','Gol','Acierto'].includes(resultLabel)) tag='pos';
-    else if(['Fallado','Perdido','Perdida','Fuera','Parada','Bloqueado','Error'].includes(resultLabel)) tag='neg';
+    else if(['Fallado','Fallo','Perdido','Perdida','Fuera','Parada','Bloqueado','Error'].includes(resultLabel)) tag='neg';
   }
   state.log.push({
     id:action.id, label:displayLabel(action), minute:state.minute, mode:state.mode,
@@ -836,6 +840,15 @@ function finishAndSave(){
   state.session.id = id;
   saveArray('futbolista-analyses', state.analyses);
   state.screen = 'dashboard';
+  render();
+}
+
+function deleteAnalysis(id){
+  const a = state.analyses.find(x=>x.id===id);
+  if(!a) return;
+  if(!confirm(`¿Eliminar el análisis de ${a.player} (${fmtDate(a.date)})? Esta acción no se puede deshacer.`)) return;
+  state.analyses = state.analyses.filter(x=>x.id!==id);
+  saveArray('futbolista-analyses', state.analyses);
   render();
 }
 
@@ -953,7 +966,7 @@ function aggregatePlayerStats(list){
       counts[l.label].total++;
       if(l.tag==='pos') counts[l.label].pos++;
       if(l.tag==='neg') counts[l.label].neg++;
-      if(GOAL_ACTION_IDS.includes(l.id) && l.result==='Gol') goals++;
+      if((GOAL_ACTION_IDS.includes(l.id) && l.result==='Gol') || l.id==='gol') goals++;
       if(l.id==='asistencia') assists++;
     });
   });
@@ -1025,6 +1038,7 @@ function renderDashboard(){
               </div>
               <div class="a-count">${a.log.length}</div>
               <button class="row-btn" data-open-btn="${a.id}">Ver</button>
+              <button class="row-del" data-del-analysis="${a.id}" title="Eliminar análisis">✕</button>
             </div>
           `).join('')
         }
@@ -1044,7 +1058,7 @@ function renderDashboard(){
                 <div class="r-meta">${p.position} · ${p.team||'Sin equipo'}</div>
               </div>
               <button class="row-btn" data-roster-new="${p.id}">Analizar</button>
-              <button class="row-btn" data-roster-stats="${p.id}">Stats</button>
+              <button class="row-btn" data-roster-stats="${p.id}">Perfil</button>
               <button class="row-del" data-roster-del="${p.id}">✕</button>
             </div>
           `).join('')
@@ -1063,6 +1077,12 @@ function renderDashboard(){
       e.stopPropagation();
       const rec = state.analyses.find(a=>a.id===btn.dataset.openBtn);
       if(rec) openAnalysis(rec);
+    };
+  });
+  root.querySelectorAll('[data-del-analysis]').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      deleteAnalysis(btn.dataset.delAnalysis);
     };
   });
   root.querySelectorAll('[data-roster-new]').forEach(btn=>{
@@ -1249,7 +1269,7 @@ function renderPlayerStats(){
 
       ${filtered.length ? `
       <div class="section-block">
-        <div class="dash-section-title">Partidos incluidos (${filtered.length})</div>
+        <div class="dash-section-title">Informes de ${state.statsPlayer} (${filtered.length})</div>
         ${filtered.map(a=>`
           <div class="analysis-row">
             <div class="a-info">
@@ -1257,6 +1277,7 @@ function renderPlayerStats(){
               <div class="a-meta">${a.competicion||'—'} · ${(a.log||[]).length} acciones${a.minutesPlayed!=null&&a.minutesPlayed!==''?' · '+a.minutesPlayed+"'":''}${a.rating!=null&&a.rating!==''?' · nota '+a.rating:''}</div>
             </div>
             <button class="row-btn" data-open-btn="${a.id}">Ver</button>
+            <button class="row-del" data-del-analysis="${a.id}" title="Eliminar análisis">✕</button>
           </div>
         `).join('')}
       </div>` : ''}
@@ -1293,6 +1314,9 @@ function renderPlayerStats(){
       const rec = state.analyses.find(a=>a.id===btn.dataset.openBtn);
       if(rec) openAnalysis(rec);
     };
+  });
+  root.querySelectorAll('[data-del-analysis]').forEach(btn=>{
+    btn.onclick = ()=>{ deleteAnalysis(btn.dataset.delAnalysis); };
   });
 
   const compEntry = competitions.find(([key])=>key===state.statsCompetition);
