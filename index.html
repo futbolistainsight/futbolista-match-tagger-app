@@ -642,9 +642,10 @@ function storageUsedMB(){
    una copia de lo que hay en pantalla para no perder el trabajo */
 function warnSaveFailed(){
   try{ exportBackup(); }catch(e){}
-  alert('ATENCION: no se pudo guardar en este navegador (almacenamiento lleno o bloqueado).\n\n'
-      + 'Se ha descargado una copia con todos tus datos, incluido lo que acabas de etiquetar. '
-      + 'Guarda ese archivo y avisa para recuperarlo.');
+  alert('ATENCION: NO se ha podido guardar en este navegador (almacenamiento lleno o bloqueado).\n\n'
+      + 'Se ha intentado descargar una copia con todos tus datos, incluido lo que acabas de etiquetar: '
+      + 'comprueba que aparece en Descargas (futbolista_copia_...json).\n\n'
+      + 'NO cierres ni recargues la app hasta confirmarlo. Si no aparece, abre Registro y pulsa Exportar CSV, y avisa.');
 }
 
 /* borrador: copia del analisis en curso, se actualiza con cada accion para no perder
