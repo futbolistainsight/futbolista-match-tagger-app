@@ -621,7 +621,56 @@ function loadArray(key){
   }catch(e){ return []; }
 }
 function saveArray(key, arr){
-  try{ localStorage.setItem(key, JSON.stringify(arr)); }catch(e){ console.error('storage error', e); }
+  try{ localStorage.setItem(key, JSON.stringify(arr)); return true; }
+  catch(e){ console.error('storage error', e); return false; }
+}
+
+/* si el navegador no deja guardar (almacenamiento lleno o bloqueado) avisamos y bajamos
+   una copia de lo que hay en pantalla para no perder el trabajo */
+function warnSaveFailed(){
+  try{ exportBackup(); }catch(e){}
+  alert('ATENCION: no se pudo guardar en este navegador (almacenamiento lleno o bloqueado).\n\n'
+      + 'Se ha descargado una copia con todos tus datos, incluido lo que acabas de etiquetar. '
+      + 'Guarda ese archivo y avisa para recuperarlo.');
+}
+
+/* borrador: copia del analisis en curso, se actualiza con cada accion para no perder
+   nada si se cierra la app o se apaga el equipo sin pulsar Guardar */
+const DRAFT_KEY = 'futbolista-draft';
+function saveDraft(){
+  try{
+    if(!state.log.length){ localStorage.removeItem(DRAFT_KEY); return; }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      session:{...state.session, photo:''}, log:state.log, minute:state.minute, mode:state.mode, savedAt:Date.now(),
+    }));
+  }catch(e){}
+}
+function loadDraft(){
+  try{
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY)||'null');
+    return d && d.session && Array.isArray(d.log) && d.log.length ? d : null;
+  }catch(e){ return null; }
+}
+function clearDraft(){ try{ localStorage.removeItem(DRAFT_KEY); }catch(e){} }
+function restoreDraft(){
+  const d = loadDraft();
+  if(!d) return;
+  stopClock();
+  state.session = {...emptySession(), ...d.session};
+  const p = state.roster.find(r=>r.photo && r.name.trim().toLowerCase()===(state.session.player||'').trim().toLowerCase());
+  state.session.photo = p ? p.photo : '';
+  state.log = d.log.slice();
+  state.minute = d.minute || 0;
+  state.seconds = 0;
+  state.mode = d.mode || 'conBalon';
+  state.screen = 'tag';
+  render();
+}
+function discardDraft(){
+  const d = loadDraft();
+  if(!d) return;
+  if(!confirm(`Se descartará el borrador de ${d.session.player||'jugador'} (${d.log.length} acciones). Esta acción no se puede deshacer.`)) return;
+  clearDraft(); render();
 }
 
 function loadOverrides(){
@@ -767,6 +816,7 @@ function logAction(action, resultLabel){
     id:action.id, label:displayLabel(action), minute:state.minute, mode:state.mode,
     result:resultLabel||null, tag, ts:Date.now(),
   });
+  saveDraft();
   render();
 }
 
@@ -787,6 +837,7 @@ function resolvePendingAction(resultLabel){
 
 function undoLast(){
   state.log.pop();
+  saveDraft();
   render();
 }
 
@@ -807,7 +858,7 @@ function startNewAnalysis(prefill){
   render();
 }
 
-function openAnalysis(record){
+function openAnalysis(record, goTag){
   stopClock();
   state.session = {
     id:record.id, player:record.player, team:record.team, rival:record.rival,
@@ -822,7 +873,8 @@ function openAnalysis(record){
   state.log = record.log ? record.log.slice() : [];
   state.minute = state.log.length ? state.log[state.log.length-1].minute : 0;
   state.seconds = 0;
-  state.screen = 'log';
+  state.mode = 'conBalon';
+  state.screen = goTag ? 'tag' : 'log';
   render();
 }
 
@@ -838,12 +890,14 @@ function persistAnalysis(){
   const idx = state.analyses.findIndex(a=>a.id===id);
   if(idx>=0) state.analyses[idx]=record; else state.analyses.push(record);
   state.session.id = id;
-  saveArray('futbolista-analyses', state.analyses);
+  const ok = saveArray('futbolista-analyses', state.analyses);
+  if(ok) clearDraft(); else warnSaveFailed();
+  return ok;
 }
 
 function finishAndSave(){
   stopClock();
-  persistAnalysis();
+  if(!persistAnalysis()) return;
   state.screen = 'dashboard';
   render();
 }
@@ -909,7 +963,7 @@ function deleteAnalysis(id){
   if(!a) return;
   if(!confirm(`¿Eliminar el análisis de ${a.player} (${fmtDate(a.date)})? Esta acción no se puede deshacer.`)) return;
   state.analyses = state.analyses.filter(x=>x.id!==id);
-  saveArray('futbolista-analyses', state.analyses);
+  if(!saveArray('futbolista-analyses', state.analyses)) warnSaveFailed();
   render();
 }
 
@@ -1093,6 +1147,22 @@ function renderDashboard(){
         <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
       </div>
 
+      ${(()=>{
+        const d = loadDraft();
+        if(!d) return '';
+        return `<div class="section-block">
+          <div class="dash-section-title">Borrador sin guardar</div>
+          <div class="analysis-row">
+            <div class="a-info">
+              <div class="a-player">${d.session.player||'Jugador'}</div>
+              <div class="a-meta">vs ${d.session.rival||'—'} · ${d.log.length} acciones · min ${d.minute||0}</div>
+            </div>
+            <button class="row-btn" id="draft-resume">Continuar</button>
+            <button class="row-del" id="draft-discard" title="Descartar borrador">✕</button>
+          </div>
+        </div>`;
+      })()}
+
       <div class="section-block">
         <div class="dash-section-title">Análisis recientes</div>
         ${recentAnalyses.length===0 ? '<div class="empty-hint">Todavía no has guardado ningún análisis.</div>' :
@@ -1103,6 +1173,7 @@ function renderDashboard(){
                 <div class="a-meta">${a.position||'—'} · vs ${a.rival||'—'} · ${fmtDate(a.date)}</div>
               </div>
               <div class="a-count">${a.log.length}</div>
+              <button class="row-btn" data-continue-btn="${a.id}">Continuar</button>
               <button class="row-btn" data-open-btn="${a.id}">Ver</button>
               <button class="row-del" data-del-analysis="${a.id}" title="Eliminar análisis">✕</button>
             </div>
@@ -1146,6 +1217,15 @@ function renderDashboard(){
     e.target.value = '';
   };
 
+  const dr = root.querySelector('#draft-resume'); if(dr) dr.onclick = restoreDraft;
+  const dd = root.querySelector('#draft-discard'); if(dd) dd.onclick = discardDraft;
+  root.querySelectorAll('[data-continue-btn]').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      const rec = state.analyses.find(a=>a.id===btn.dataset.continueBtn);
+      if(rec) openAnalysis(rec, true);
+    };
+  });
   root.querySelectorAll('[data-open-btn]').forEach(btn=>{
     btn.onclick = (e)=>{
       e.stopPropagation();
@@ -1623,6 +1703,7 @@ function renderTag(){
         <div class="dock-divider"></div>
         <div class="dock-stat"><b>${sinBalonCount}</b><span>Sin balón</span></div>
         <button class="dock-btn ghost" id="open-log">Registro</button>
+        <button class="dock-btn" id="dock-save" style="background:var(--green);color:#fff;">Guardar</button>
       </div>
     </div>
     ${state.pendingAction ? renderResultSheet() : ''}
@@ -1635,6 +1716,9 @@ function renderTag(){
   root.querySelector('#mode-sin').onclick = ()=>{state.mode='sinBalon'; render();};
   root.querySelector('#toggle-all').onclick = ()=>{state.showAll=!state.showAll; render();};
   root.querySelector('#open-log').onclick = ()=>{state.screen='log'; render();};
+  root.querySelector('#dock-save').onclick = ()=>{
+    if(persistAnalysis()){ const b=root.querySelector('#dock-save'); if(b){ b.textContent='Guardado ✓'; setTimeout(()=>{ const x=root.querySelector('#dock-save'); if(x) x.textContent='Guardar'; }, 1500); } }
+  };
 
   root.querySelectorAll('.act-btn').forEach(btn=>{
     btn.onclick = ()=>{
