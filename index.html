@@ -714,8 +714,20 @@ const cloud = {session:null, status:'off', msg:'', lastSync:0, busy:false, again
 function cloudSlug(name){
   return (name||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
 }
+/* identificador del jugador en la web cuando no coincide con su nombre (la web lo llama asier-herrero) */
+const PLAYER_KEY_OVERRIDES = {'ariel herrero':'asier-herrero'};
+/* correcciones de ortografia que se aplican una vez a los datos locales */
+const NAME_FIXES = {'yaretzi betancor':'Yaretzi Betancort'};
+function applyNameFixes(){
+  let rc=false, ac=false;
+  state.roster.forEach(p=>{ const f=NAME_FIXES[(p.name||'').trim().toLowerCase()]; if(f){ p.name=f; p.updatedAt=rosterTs(p)+1; rc=true; } });
+  state.analyses.forEach(a=>{ const f=NAME_FIXES[(a.player||'').trim().toLowerCase()]; if(f){ a.player=f; a.savedAt=(a.savedAt||0)+1; ac=true; } });
+  if(rc) saveArray('futbolista-roster', state.roster);
+  if(ac) saveArray('futbolista-analyses', state.analyses);
+}
 function cloudPlayerKey(name){
   const k = (name||'').trim().toLowerCase();
+  if(PLAYER_KEY_OVERRIDES[k]) return PLAYER_KEY_OVERRIDES[k];
   const p = state.roster.find(r=>(r.name||'').trim().toLowerCase()===k && r.playerKey);
   return p ? p.playerKey : cloudSlug(name);
 }
@@ -934,6 +946,7 @@ function init(){
   state.labelOverrides = loadOverrides();
   const slim = state.analyses.map(a=> (a.photo && rosterPhotoFor(a.player)) ? {...a, photo:''} : a);
   if(slim.some((a,i)=>a!==state.analyses[i]) && saveArray('futbolista-analyses', slim)) state.analyses = slim;
+  applyNameFixes();
   state.loading = false;
   state.screen = 'dashboard';
   cloudLoadSession();
