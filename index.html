@@ -700,6 +700,234 @@ function displayLabel(action){
   return (o && o.trim()) ? o.trim() : action.label;
 }
 
+/* ============================================================
+   NUBE (Supabase): los analisis y la cartera se guardan tambien en la base de datos.
+   El navegador sigue siendo la copia local (funciona sin conexion); al conectar, cada
+   analisis se sincroniza por separado y gana siempre el guardado mas reciente.
+   ============================================================ */
+const CLOUD_URL = 'https://shfahhuvwegyfybgzdoq.supabase.co';
+const CLOUD_KEY = 'sb_publishable_chQUW_jCrOzGysmeMRpwLg_dybVi4MF'; // clave publica; los datos los protege el login (RLS)
+const CLOUD_SESSION_KEY = 'futbolista-cloud-session';
+const CLOUD_META_KEY = 'futbolista-sync-meta';
+const cloud = {session:null, status:'off', msg:'', lastSync:0, busy:false, again:false};
+
+function cloudSlug(name){
+  return (name||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+}
+function cloudPlayerKey(name){
+  const k = (name||'').trim().toLowerCase();
+  const p = state.roster.find(r=>(r.name||'').trim().toLowerCase()===k && r.playerKey);
+  return p ? p.playerKey : cloudSlug(name);
+}
+function rosterTs(p){ return p.updatedAt || p.createdAt || 0; }
+
+function cloudLoadSession(){
+  try{ const s = JSON.parse(localStorage.getItem(CLOUD_SESSION_KEY)||'null'); if(s && s.access_token && s.refresh_token) cloud.session = s; }catch(e){}
+  cloud.status = cloud.session ? 'ok' : 'off';
+}
+function cloudSaveSession(){
+  try{
+    if(cloud.session) localStorage.setItem(CLOUD_SESSION_KEY, JSON.stringify(cloud.session));
+    else localStorage.removeItem(CLOUD_SESSION_KEY);
+  }catch(e){}
+}
+function cloudMeta(){
+  try{ const m = JSON.parse(localStorage.getItem(CLOUD_META_KEY)||'null'); if(m && m.A && m.R) return m; }catch(e){}
+  return {A:{}, R:{}};
+}
+function cloudSaveMeta(m){ try{ localStorage.setItem(CLOUD_META_KEY, JSON.stringify(m)); }catch(e){} }
+/* un borrado local se recuerda hasta que la nube lo recibe */
+function cloudTomb(kind, id){ const m = cloudMeta(); m[kind][id] = Date.now(); cloudSaveMeta(m); }
+
+function setCloudStatus(status, msg){
+  cloud.status = status; cloud.msg = msg||'';
+  if(state.screen==='dashboard') render();
+}
+
+async function cloudTokenRequest(grant, body){
+  const res = await fetch(`${CLOUD_URL}/auth/v1/token?grant_type=${grant}`, {
+    method:'POST', headers:{'apikey':CLOUD_KEY, 'Content-Type':'application/json'}, body:JSON.stringify(body),
+  });
+  const j = await res.json().catch(()=>({}));
+  if(!res.ok){ const e = new Error(j.error_description || j.msg || j.message || ('error '+res.status)); e.status = res.status; throw e; }
+  return {
+    access_token:j.access_token, refresh_token:j.refresh_token,
+    expires_at: Date.now() + (j.expires_in||3600)*1000, email:(j.user && j.user.email) || '',
+  };
+}
+async function cloudRefresh(){
+  try{
+    cloud.session = await cloudTokenRequest('refresh_token', {refresh_token:cloud.session.refresh_token});
+    cloudSaveSession();
+  }catch(e){
+    if(e.status===400 || e.status===401){ cloud.session = null; cloudSaveSession(); }
+    throw e;
+  }
+}
+async function cloudFetch(path, opts){
+  if(!cloud.session) throw new Error('sin sesión');
+  if(cloud.session.expires_at - Date.now() < 60000) await cloudRefresh();
+  const o = opts || {};
+  const res = await fetch(CLOUD_URL + path, {
+    method:o.method||'GET', body:o.body,
+    headers:{'apikey':CLOUD_KEY, 'Authorization':'Bearer '+cloud.session.access_token, 'Content-Type':'application/json', ...(o.headers||{})},
+  });
+  if(!res.ok){
+    const t = await res.text().catch(()=> '');
+    const e = new Error(`la nube respondió ${res.status}${t?': '+t.slice(0,120):''}`); e.status = res.status; throw e;
+  }
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+async function cloudLogin(email, password){
+  cloud.session = await cloudTokenRequest('password', {email, password});
+  let admin = false;
+  try{ admin = (await cloudFetch('/rest/v1/rpc/is_admin', {method:'POST', body:'{}'})) === true; }catch(e){ admin = false; }
+  if(!admin){ cloud.session = null; cloudSaveSession(); throw new Error('esta cuenta no tiene permiso de administrador'); }
+  cloudSaveSession();
+  cloud.status = 'ok';
+}
+function cloudLogout(){
+  cloud.session = null; cloudSaveSession(); cloud.status = 'off'; cloud.msg = '';
+  render();
+}
+
+const CLOUD_TABLES = {
+  A:{
+    table:'tagger_analyses', items:()=>state.analyses, set:v=>{ state.analyses=v; }, key:'futbolista-analyses',
+    ts:a=>a.savedAt||0,
+    row:a=>({
+      id:a.id, player_key:cloudPlayerKey(a.player), player:a.player, match_date:a.date||null, rival:a.rival||'',
+      competicion:a.competicion||'', rating:Number.isFinite(parseInt(a.rating,10))?parseInt(a.rating,10):null,
+      minutes_played:Number.isFinite(parseInt(a.minutesPlayed,10))?parseInt(a.minutesPlayed,10):null,
+      data:a, saved_at:a.savedAt||0, deleted_at:null,
+    }),
+    fromRow:r=>({...r.data, savedAt:r.saved_at}),
+  },
+  R:{
+    table:'tagger_roster', items:()=>state.roster, set:v=>{ state.roster=v; }, key:'futbolista-roster',
+    ts:rosterTs,
+    row:p=>({id:p.id, player_key:cloudPlayerKey(p.name), data:p, saved_at:rosterTs(p), deleted_at:null}),
+    fromRow:r=>({...r.data, updatedAt:r.saved_at}),
+  },
+};
+
+async function cloudSyncTable(kind){
+  const cfg = CLOUD_TABLES[kind];
+  const meta = cloudMeta();
+  const remoteRows = await cloudFetch(`/rest/v1/${cfg.table}?select=id,saved_at,deleted_at&limit=10000`);
+  const remote = new Map(remoteRows.map(r=>[r.id, r]));
+  let local = cfg.items().slice();
+  const localIds = new Set(local.map(x=>x.id));
+  const toPush = [], toPull = [], toDrop = new Set();
+
+  // borrados locales pendientes -> la nube
+  for(const id of Object.keys(meta[kind])){
+    const r = remote.get(id), ts = meta[kind][id];
+    if(!r){ delete meta[kind][id]; continue; }
+    if(r.deleted_at && r.saved_at>=ts){ delete meta[kind][id]; continue; }
+    await cloudFetch(`/rest/v1/${cfg.table}?id=eq.${encodeURIComponent(id)}`, {
+      method:'PATCH', headers:{'Prefer':'return=minimal'}, body:JSON.stringify({deleted_at:new Date(ts).toISOString(), saved_at:ts}),
+    });
+    r.deleted_at = new Date(ts).toISOString(); r.saved_at = ts; delete meta[kind][id];
+  }
+
+  for(const item of local){
+    const r = remote.get(item.id), ts = cfg.ts(item);
+    if(!r) toPush.push(item);
+    else if(r.deleted_at){ if(ts > r.saved_at) toPush.push(item); else toDrop.add(item.id); }
+    else if(ts > r.saved_at) toPush.push(item);
+    else if(ts < r.saved_at) toPull.push(item.id);
+  }
+  for(const [id, r] of remote){
+    if(!localIds.has(id) && !r.deleted_at && !(id in meta[kind])) toPull.push(id);
+  }
+
+  for(let i=0;i<toPush.length;i+=10){
+    const rows = toPush.slice(i,i+10).map(cfg.row);
+    await cloudFetch(`/rest/v1/${cfg.table}?on_conflict=id`, {
+      method:'POST', headers:{'Prefer':'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify(rows),
+    });
+  }
+  let changed = false;
+  for(let i=0;i<toPull.length;i+=10){
+    const ids = toPull.slice(i,i+10).map(id=>'"'+id.replace(/"/g,'')+'"').join(',');
+    const rows = await cloudFetch(`/rest/v1/${cfg.table}?id=in.(${encodeURIComponent(ids)})&select=id,saved_at,data`);
+    for(const r of rows){
+      const item = cfg.fromRow(r);
+      const idx = local.findIndex(x=>x.id===r.id);
+      if(idx>=0) local[idx] = item; else local.push(item);
+      changed = true;
+    }
+  }
+  if(toDrop.size){ local = local.filter(x=>!toDrop.has(x.id)); changed = true; }
+  if(changed){
+    cfg.set(local);
+    if(!saveArray(cfg.key, local)) throw new Error('no se pudo guardar en el navegador lo recibido de la nube');
+  }
+  cloudSaveMeta(meta);
+  return {pushed:toPush.length, pulled:toPull.length, dropped:toDrop.size};
+}
+
+async function cloudSync(){
+  if(!cloud.session) return;
+  if(cloud.busy){ cloud.again = true; return; }
+  cloud.busy = true; setCloudStatus('syncing');
+  try{
+    await cloudSyncTable('A');
+    await cloudSyncTable('R');
+    cloud.lastSync = Date.now(); setCloudStatus('ok');
+  }catch(e){
+    if(!cloud.session) setCloudStatus('off', 'La sesión ha caducado. Vuelve a conectar.');
+    else if(e instanceof TypeError || (typeof navigator!=='undefined' && navigator.onLine===false)) setCloudStatus('offline', 'Sin conexión. Se sincronizará al volver.');
+    else setCloudStatus('error', e.message);
+  }finally{
+    cloud.busy = false;
+    if(cloud.again){ cloud.again = false; cloudSync(); }
+  }
+}
+
+function cloudStatusHTML(){
+  const t = cloud.lastSync ? new Date(cloud.lastSync).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}) : '';
+  if(!cloud.session) return `<span>Nube: sin conectar. Tus datos están solo en este navegador.</span> <button class="row-btn" id="cloud-connect">Conectar</button>`;
+  if(cloud.status==='syncing') return `<span>Nube: sincronizando…</span>`;
+  if(cloud.status==='error') return `<span style="color:#E3543F;">Nube: error (${cloud.msg}).</span> <button class="row-btn" id="cloud-sync">Reintentar</button>`;
+  if(cloud.status==='offline') return `<span style="color:#E3A53F;">Nube: ${cloud.msg}</span> <button class="row-btn" id="cloud-sync">Reintentar</button>`;
+  return `<span style="color:#4ADE80;">Nube: sincronizado${t?' a las '+t:''}</span> <span>· ${cloud.session.email||''}</span> <button class="row-btn" id="cloud-sync">Sincronizar</button> <button class="row-btn" id="cloud-logout">Salir</button>`;
+}
+
+function renderCloudLogin(){
+  root.innerHTML = `
+    <div class="setup">
+      <button class="topbar-back" id="back-dash">← Volver al panel</button>
+      <div class="setup-eyebrow">Futbolista Insight · Nube</div>
+      <h1>Conectar con la<br><span class="accent">nube</span></h1>
+      <p class="sub">Inicia sesión con tu cuenta de administrador. Tus análisis se guardarán también en la base de datos y los verás desde cualquier dispositivo.</p>
+      <div class="field"><label>Email</label><input id="cl-email" type="email" autocomplete="username" placeholder="tu@email.com"></div>
+      <div class="field"><label>Contraseña</label><input id="cl-pass" type="password" autocomplete="current-password" placeholder="Contraseña"></div>
+      <div id="cl-msg" style="color:#E3543F;font-size:13px;min-height:18px;margin-bottom:10px;"></div>
+      <button class="start-btn" id="cl-go">Conectar</button>
+    </div>`;
+  const msg = root.querySelector('#cl-msg'), go = root.querySelector('#cl-go');
+  root.querySelector('#back-dash').onclick = ()=>{ state.screen='dashboard'; render(); };
+  async function submit(){
+    const email = root.querySelector('#cl-email').value.trim(), pass = root.querySelector('#cl-pass').value;
+    if(!email || !pass){ msg.textContent = 'Escribe el email y la contraseña.'; return; }
+    go.disabled = true; go.textContent = 'Conectando…'; msg.textContent = '';
+    try{
+      await cloudLogin(email, pass);
+      state.screen = 'dashboard'; render();
+      cloudSync();
+    }catch(e){
+      go.disabled = false; go.textContent = 'Conectar';
+      msg.textContent = (e instanceof TypeError) ? 'No hay conexión con la nube.' : ('No se pudo conectar: '+e.message);
+    }
+  }
+  go.onclick = submit;
+  root.querySelectorAll('input').forEach(i=>i.onkeydown = e=>{ if(e.key==='Enter') submit(); });
+}
+
 function init(){
   state.roster = loadArray('futbolista-roster');
   state.analyses = loadArray('futbolista-analyses');
@@ -708,7 +936,11 @@ function init(){
   if(slim.some((a,i)=>a!==state.analyses[i]) && saveArray('futbolista-analyses', slim)) state.analyses = slim;
   state.loading = false;
   state.screen = 'dashboard';
+  cloudLoadSession();
   render();
+  window.addEventListener('online', ()=>cloudSync());
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden && state.screen==='dashboard') cloudSync(); });
+  cloudSync();
 }
 
 /* ============================================================
@@ -906,7 +1138,7 @@ function persistAnalysis(){
   if(idx>=0) state.analyses[idx]=record; else state.analyses.push(record);
   state.session.id = id;
   const ok = saveArray('futbolista-analyses', state.analyses);
-  if(ok) clearDraft(); else warnSaveFailed();
+  if(ok){ clearDraft(); cloudSync(); } else warnSaveFailed();
   return ok;
 }
 
@@ -965,6 +1197,7 @@ function importBackupFile(file){
   reader.onload = ()=>{
     try{
       const res = importBackupData(JSON.parse(reader.result));
+      cloudSync();
       alert(`Importación completada.\n\nAnálisis añadidos: ${res.added}\nOmitidos (ya existían): ${res.skipped}\nJugadores nuevos: ${res.newPlayers}`);
       render();
     }catch(e){ alert('No se pudo importar el archivo: '+e.message); }
@@ -979,14 +1212,16 @@ function deleteAnalysis(id){
   if(!confirm(`¿Eliminar el análisis de ${a.player} (${fmtDate(a.date)})? Esta acción no se puede deshacer.`)) return;
   state.analyses = state.analyses.filter(x=>x.id!==id);
   if(!saveArray('futbolista-analyses', state.analyses)) warnSaveFailed();
+  cloudTomb('A', id); cloudSync();
   render();
 }
 
 function addRosterPlayer(){
   const d = state.rosterDraft;
   if(!d.name.trim() || !d.position) return;
-  state.roster.push({id:'pl_'+Date.now(), name:d.name.trim(), team:d.team.trim(), position:d.position, photo:d.photo||'', createdAt:Date.now()});
+  state.roster.push({id:'pl_'+Date.now(), name:d.name.trim(), team:d.team.trim(), position:d.position, photo:d.photo||'', createdAt:Date.now(), updatedAt:Date.now()});
   saveArray('futbolista-roster', state.roster);
+  cloudSync();
   state.rosterDraft = {name:'',team:'',position:'',photo:''};
   state.screen = 'dashboard';
   render();
@@ -995,14 +1230,16 @@ function addRosterPlayer(){
 function updateRosterPhoto(id, dataURL){
   const p = state.roster.find(r=>r.id===id);
   if(!p) return;
-  p.photo = dataURL;
+  p.photo = dataURL; p.updatedAt = Date.now();
   saveArray('futbolista-roster', state.roster);
+  cloudSync();
   render();
 }
 
 function deleteRosterPlayer(id){
   state.roster = state.roster.filter(p=>p.id!==id);
   saveArray('futbolista-roster', state.roster);
+  cloudTomb('R', id); cloudSync();
   render();
 }
 
@@ -1161,6 +1398,7 @@ function renderDashboard(){
         <button class="dash-secondary" id="btn-import-backup">Importar datos</button>
         <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
       </div>
+      <div class="empty-hint" id="cloud-box" style="margin:-8px 0 10px;text-align:left;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">${cloudStatusHTML()}</div>
       ${(()=>{ const mb = storageUsedMB(); return `<div class="empty-hint" style="margin:-8px 0 18px;text-align:left;${mb>3.5?'color:#E3543F;':''}">Almacenamiento usado: ${mb.toFixed(1)} MB de ~5${mb>3.5?' · casi lleno, haz Exportar copia':''}</div>`; })()}
 
       ${(()=>{
@@ -1225,6 +1463,9 @@ function renderDashboard(){
   root.querySelector('#btn-player-stats').onclick = ()=>openPlayerStats('');
   root.querySelector('#btn-edit-labels').onclick = ()=>{state.screen='editLabels'; render();};
   root.querySelector('#btn-export-backup').onclick = exportBackup;
+  const cc = root.querySelector('#cloud-connect'); if(cc) cc.onclick = ()=>{ state.screen='cloudLogin'; render(); };
+  const cs = root.querySelector('#cloud-sync'); if(cs) cs.onclick = ()=>cloudSync();
+  const cl = root.querySelector('#cloud-logout'); if(cl) cl.onclick = cloudLogout;
   const importInput = root.querySelector('#import-file');
   root.querySelector('#btn-import-backup').onclick = ()=>importInput.click();
   importInput.onchange = e=>{
@@ -2510,6 +2751,7 @@ function render(){
   else if(state.screen==='rating') renderRating();
   else if(state.screen==='playerStats') renderPlayerStats();
   else if(state.screen==='editLabels') renderEditLabels();
+  else if(state.screen==='cloudLogin') renderCloudLogin();
 }
 render();
 init();
