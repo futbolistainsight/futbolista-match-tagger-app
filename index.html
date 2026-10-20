@@ -1290,6 +1290,26 @@ function togglePublish(id){
   render();
 }
 
+/* publica de una vez todos los informes pendientes que estan completos (con nota y jornada) */
+async function publishAll(){
+  if(!cloud.session){ alert('Para publicar primero conecta la nube (botón Conectar del panel).'); return; }
+  await cloudSync();                       // partir de lo que ya hay en la nube
+  const pend = state.analyses.filter(a=>!a.published);
+  const hasRating = a=>a.rating!=null && a.rating!=='';
+  const needsJ = a=>a.jornada==null && compTipoOf(a)!=='pretemporada';
+  const ok = pend.filter(a=>hasRating(a) && !needsJ(a));
+  const skipped = pend.filter(a=>!(hasRating(a) && !needsJ(a)));
+  if(!ok.length){ alert('No hay informes completos pendientes de publicar.'); return; }
+  const players = new Set(ok.map(a=>a.player)).size;
+  let msg = `Se publicarán ${ok.length} informes de ${players} jugadores. Cada jugador verá solo los suyos.`;
+  if(skipped.length) msg += `\n\nNo se publicarán (falta la nota o la jornada):\n` + skipped.map(a=>`· ${a.player} vs ${a.rival||'—'} (${fmtDate(a.date)})`).join('\n');
+  if(!confirm(msg + '\n\n¿Continuar?')) return;
+  ok.forEach(a=>{ a.published = true; a.savedAt = (a.savedAt||0) + 1; });   // +1 mantiene el orden de la lista
+  if(!saveArray('futbolista-analyses', state.analyses)) warnSaveFailed();
+  cloudSync();
+  render();
+}
+
 function deleteAnalysis(id){
   const a = state.analyses.find(x=>x.id===id);
   if(!a) return;
@@ -1482,7 +1502,7 @@ function renderDashboard(){
         <button class="dash-secondary" id="btn-import-backup">Importar datos</button>
         <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
       </div>
-      <div class="empty-hint" id="cloud-box" style="margin:-8px 0 10px;text-align:left;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">${cloudStatusHTML()}</div>
+      <div class="empty-hint" id="cloud-box" style="margin:-8px 0 10px;text-align:left;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">${cloudStatusHTML()}${cloud.session && state.analyses.some(a=>!a.published) ? `<button class="row-btn" id="publish-all">Publicar todos (${state.analyses.filter(a=>!a.published).length})</button>` : ''}</div>
       ${(()=>{ const mb = storageUsedMB(); return `<div class="empty-hint" style="margin:-8px 0 18px;text-align:left;${mb>3.5?'color:#E3543F;':''}">Almacenamiento usado: ${mb.toFixed(1)} MB de ~5${mb>3.5?' · casi lleno, haz Exportar copia':''}</div>`; })()}
 
       ${(()=>{
@@ -1551,6 +1571,7 @@ function renderDashboard(){
   const cc = root.querySelector('#cloud-connect'); if(cc) cc.onclick = ()=>{ state.screen='cloudLogin'; render(); };
   const cs = root.querySelector('#cloud-sync'); if(cs) cs.onclick = ()=>cloudSync();
   const cl = root.querySelector('#cloud-logout'); if(cl) cl.onclick = cloudLogout;
+  const pa = root.querySelector('#publish-all'); if(pa) pa.onclick = publishAll;
   const importInput = root.querySelector('#import-file');
   root.querySelector('#btn-import-backup').onclick = ()=>importInput.click();
   importInput.onchange = e=>{
