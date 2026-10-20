@@ -98,6 +98,8 @@
   .a-info,.r-info{flex:1;min-width:0;}
   .a-player,.r-name{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .a-meta,.r-meta{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:2px;}
+  .pub-pill{background:transparent;border:1px solid var(--carbon-line);color:var(--ink-faint);border-radius:20px;padding:3px 9px;font-size:10px;font-family:var(--mono);margin-top:5px;}
+  .pub-pill.on{background:var(--green-soft);border-color:var(--green);color:#9BE36B;}
   .a-count{font-family:var(--mono);font-size:15px;color:var(--gold);flex:none;}
   .row-btn{background:var(--carbon-line);border:none;color:var(--ink);border-radius:8px;padding:8px 11px;font-size:11.5px;font-weight:600;flex:none;}
   .row-del{background:none;border:none;color:var(--ink-faint);font-size:16px;padding:4px 6px;flex:none;}
@@ -503,7 +505,7 @@ const STATS_CAT_COLOR = {construccion:'#5A96FF', progresion:'#4ADE80', finalizac
    ESTADO
    ============================================================ */
 const emptySession = ()=>({
-  id:null, player:'',team:'',rival:'',competicion:'',date:new Date().toISOString().slice(0,10),position:'',
+  id:null, jornada:'', published:false, player:'',team:'',rival:'',competicion:'',date:new Date().toISOString().slice(0,10),position:'',
   rating:'', minutesPlayed:'', attrs:{defensa:5,ataque:5,pase:5,velocidad:5,concentracion:5,general:5},
   fortalezas:[''], debilidades:[''], photo:'',
 });
@@ -725,6 +727,50 @@ function applyNameFixes(){
   if(rc) saveArray('futbolista-roster', state.roster);
   if(ac) saveArray('futbolista-analyses', state.analyses);
 }
+/* jornada (numero) de cada analisis; vacio si no aplica (amistosos sin numero) */
+function parseJornadaField(v){ const n = parseInt(v,10); return Number.isFinite(n) && n>=0 ? n : null; }
+/* tipo de competicion para la web, deducido del texto libre del campo Competicion */
+function compTipoOf(a){
+  const t = (a.competicion||'').toLowerCase();
+  if(/amistoso|pretemporada/.test(t)) return 'pretemporada';
+  if(/copa/.test(t)) return 'copa';
+  return 'liga';
+}
+/* resumen por partido que lee la web: acciones agrupadas con aciertos y errores */
+function analysisSummary(a){
+  const by = {}; let goals = 0, assists = 0;
+  (a.log||[]).forEach(l=>{
+    const cat = reportCategoryOf(l.id, l.cat);
+    const o = by[l.label] || (by[l.label] = {label:l.label, cat, total:0, pos:0, neg:0});
+    o.total++;
+    if(l.tag==='pos') o.pos++;
+    if(l.tag==='neg') o.neg++;
+    if((GOAL_ACTION_IDS.includes(l.id) && l.result==='Gol') || l.id==='gol') goals++;
+    if(l.id==='asistencia') assists++;
+  });
+  return {total:(a.log||[]).length, goals, assists, acciones:Object.values(by)};
+}
+/* jornada de los analisis ya existentes (de tu web y del campo competicion). Se aplica una vez
+   a los que aun no tienen jornada; los nuevos la piden en el formulario */
+const JORNADA_BACKFILL = {
+  'alvaro-dominguez|2026-08-22':6,'alvaro-dominguez|2026-09-21':4,'alvaro-dominguez|2026-09-28':5,'alvaro-dominguez|2026-10-05':6,'alvaro-dominguez|2026-10-12':7,
+  'asier-herrero|2026-08-16':0,'asier-herrero|2026-08-20':1,'asier-herrero|2026-08-24':2,'asier-herrero|2026-08-31':3,'asier-herrero|2026-09-07':1,'asier-herrero|2026-09-14':2,'asier-herrero|2026-10-05':5,'asier-herrero|2026-10-13':6,
+  'brais-blanco|2026-09-08':1,'brais-blanco|2026-09-15':2,'brais-blanco|2026-09-23':3,'brais-blanco|2026-10-02':4,'brais-blanco|2026-10-09':5,'brais-blanco|2026-10-14':6,'brais-blanco|2026-10-19':7,
+  'diego-cantero|2026-09-06':1,'diego-cantero|2026-09-16':2,'diego-cantero|2026-09-22':3,'diego-cantero|2026-09-29':4,'diego-cantero|2026-10-06':5,'diego-cantero|2026-10-12':6,
+  'javier-labrada|2026-09-01':1,'javier-labrada|2026-09-05':2,'javier-labrada|2026-09-14':3,'javier-labrada|2026-09-21':4,'javier-labrada|2026-09-28':5,'javier-labrada|2026-10-07':6,'javier-labrada|2026-10-12':7,'javier-labrada|2026-10-20':8,
+  'yaretzi-betancort|2026-09-29':3,
+};
+function applyJornadaBackfill(){
+  let ch = false;
+  state.analyses.forEach(a=>{
+    if(a.jornada!==undefined) return;
+    const j = JORNADA_BACKFILL[cloudPlayerKey(a.player)+'|'+a.date];
+    a.jornada = j!==undefined ? j : null;
+    if(j!==undefined) a.savedAt = (a.savedAt||0)+1;
+    ch = true;
+  });
+  if(ch) saveArray('futbolista-analyses', state.analyses);
+}
 function cloudPlayerKey(name){
   const k = (name||'').trim().toLowerCase();
   if(PLAYER_KEY_OVERRIDES[k]) return PLAYER_KEY_OVERRIDES[k];
@@ -813,6 +859,7 @@ const CLOUD_TABLES = {
       id:a.id, player_key:cloudPlayerKey(a.player), player:a.player, match_date:a.date||null, rival:a.rival||'',
       competicion:a.competicion||'', rating:Number.isFinite(parseInt(a.rating,10))?parseInt(a.rating,10):null,
       minutes_played:Number.isFinite(parseInt(a.minutesPlayed,10))?parseInt(a.minutesPlayed,10):null,
+      published:!!a.published, jornada:parseJornadaField(a.jornada), comp_tipo:compTipoOf(a), summary:analysisSummary(a),
       data:a, saved_at:a.savedAt||0, deleted_at:null,
     }),
     fromRow:r=>({...r.data, savedAt:r.saved_at}),
@@ -947,6 +994,7 @@ function init(){
   const slim = state.analyses.map(a=> (a.photo && rosterPhotoFor(a.player)) ? {...a, photo:''} : a);
   if(slim.some((a,i)=>a!==state.analyses[i]) && saveArray('futbolista-analyses', slim)) state.analyses = slim;
   applyNameFixes();
+  applyJornadaBackfill();
   state.loading = false;
   state.screen = 'dashboard';
   cloudLoadSession();
@@ -1122,6 +1170,7 @@ function openAnalysis(record, goTag){
   stopClock();
   state.session = {
     id:record.id, player:record.player, team:record.team, rival:record.rival,
+    jornada: record.jornada!=null ? record.jornada : '', published: !!record.published,
     competicion:record.competicion||'', date:record.date, position:record.position,
     rating: record.rating!=null ? record.rating : '',
     minutesPlayed: record.minutesPlayed!=null ? record.minutesPlayed : '',
@@ -1143,7 +1192,8 @@ function persistAnalysis(){
   const s = state.session;
   const id = s.id || ('an_'+Date.now());
   const record = {
-    id, player:s.player, team:s.team, rival:s.rival, competicion:s.competicion, date:s.date, position:s.position,
+    id, player:s.player, team:s.team, rival:s.rival, jornada:parseJornadaField(s.jornada), published:!!s.published,
+    competicion:s.competicion, date:s.date, position:s.position,
     rating: s.rating, minutesPlayed: s.minutesPlayed, attrs: {...s.attrs}, fortalezas: cleanList(s.fortalezas), debilidades: cleanList(s.debilidades),
     photo: rosterPhotoFor(s.player) ? '' : (s.photo||''), log: state.log, savedAt: Date.now(),
   };
@@ -1217,6 +1267,27 @@ function importBackupFile(file){
   };
   reader.onerror = ()=>alert('No se pudo leer el archivo.');
   reader.readAsText(file);
+}
+
+function togglePublish(id){
+  const a = state.analyses.find(x=>x.id===id);
+  if(!a) return;
+  if(!a.published){
+    if(!cloud.session){ alert('Para publicar el informe primero conecta la nube (botón Conectar del panel).'); return; }
+    if(a.jornada==null && compTipoOf(a)!=='pretemporada'){
+      const v = prompt(`¿De qué jornada es este partido de ${a.player}? (número, p. ej. 8)`, '');
+      if(v===null) return;
+      const j = parseJornadaField(v);
+      if(j===null){ alert('Escribe el número de jornada.'); return; }
+      a.jornada = j;
+    }
+    if(!confirm(`Publicar el informe de ${a.player} (${fmtDate(a.date)} vs ${a.rival||'—'})?\n\nEl jugador lo verá en su espacio de la web.`)) return;
+  } else if(!confirm(`Dejar de publicar este informe? El jugador dejará de verlo.`)) return;
+  a.published = !a.published;
+  a.savedAt = Date.now();
+  if(!saveArray('futbolista-analyses', state.analyses)) warnSaveFailed();
+  cloudSync();
+  render();
 }
 
 function deleteAnalysis(id){
@@ -1437,7 +1508,8 @@ function renderDashboard(){
             <div class="analysis-row" data-open="${a.id}">
               <div class="a-info">
                 <div class="a-player">${a.player}</div>
-                <div class="a-meta">${a.position||'—'} · vs ${a.rival||'—'} · ${fmtDate(a.date)}</div>
+                <div class="a-meta">${a.position||'—'} · vs ${a.rival||'—'} · ${fmtDate(a.date)}${a.jornada!=null?' · J'+a.jornada:''}</div>
+                <button class="pub-pill ${a.published?'on':''}" data-publish="${a.id}">${a.published?'● Publicado':'○ Sin publicar'}</button>
               </div>
               <div class="a-count">${a.log.length}</div>
               <button class="row-btn" data-continue-btn="${a.id}">Continuar</button>
@@ -1489,6 +1561,9 @@ function renderDashboard(){
 
   const dr = root.querySelector('#draft-resume'); if(dr) dr.onclick = restoreDraft;
   const dd = root.querySelector('#draft-discard'); if(dd) dd.onclick = discardDraft;
+  root.querySelectorAll('[data-publish]').forEach(btn=>{
+    btn.onclick = (e)=>{ e.stopPropagation(); togglePublish(btn.dataset.publish); };
+  });
   root.querySelectorAll('[data-continue-btn]').forEach(btn=>{
     btn.onclick = (e)=>{
       e.stopPropagation();
@@ -1874,6 +1949,10 @@ function renderSetup(){
         </div>
       </div>
       <div class="field">
+        <label>Jornada (número, opcional)</label>
+        <input id="f-jornada" type="number" min="0" placeholder="8" value="${s.jornada}">
+      </div>
+      <div class="field">
         <label>Posición</label>
         <div class="pos-grid">
           ${POSITIONS.map(p=>`<button class="pos-chip ${s.position===p.id?'active':''}" data-pos="${p.id}">${p.label}</button>`).join('')}
@@ -1896,6 +1975,7 @@ function renderSetup(){
   root.querySelector('#f-rival').oninput = e=>{state.session.rival=e.target.value;};
   root.querySelector('#f-date').oninput = e=>{state.session.date=e.target.value;};
   root.querySelector('#f-comp').oninput = e=>{state.session.competicion=e.target.value;};
+  root.querySelector('#f-jornada').oninput = e=>{state.session.jornada=e.target.value;};
   root.querySelectorAll('.pos-chip').forEach(btn=>{
     btn.onclick = ()=>{state.session.position=btn.dataset.pos; render();};
   });
