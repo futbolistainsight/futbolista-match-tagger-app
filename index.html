@@ -625,6 +625,19 @@ function saveArray(key, arr){
   catch(e){ console.error('storage error', e); return false; }
 }
 
+/* la foto vive solo en la ficha del jugador; los analisis la buscan por nombre.
+   Guardarla dentro de cada analisis llenaba el almacenamiento del navegador (~5 MB) */
+function rosterPhotoFor(name){
+  const k = (name||'').trim().toLowerCase();
+  const p = state.roster.find(r=>r.photo && (r.name||'').trim().toLowerCase()===k);
+  return p ? p.photo : '';
+}
+function storageUsedMB(){
+  let n = 0;
+  try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); n += k.length + (localStorage.getItem(k)||'').length; } }catch(e){}
+  return n/1e6;
+}
+
 /* si el navegador no deja guardar (almacenamiento lleno o bloqueado) avisamos y bajamos
    una copia de lo que hay en pantalla para no perder el trabajo */
 function warnSaveFailed(){
@@ -657,8 +670,7 @@ function restoreDraft(){
   if(!d) return;
   stopClock();
   state.session = {...emptySession(), ...d.session};
-  const p = state.roster.find(r=>r.photo && r.name.trim().toLowerCase()===(state.session.player||'').trim().toLowerCase());
-  state.session.photo = p ? p.photo : '';
+  state.session.photo = rosterPhotoFor(state.session.player);
   state.log = d.log.slice();
   state.minute = d.minute || 0;
   state.seconds = 0;
@@ -691,6 +703,8 @@ function init(){
   state.roster = loadArray('futbolista-roster');
   state.analyses = loadArray('futbolista-analyses');
   state.labelOverrides = loadOverrides();
+  const slim = state.analyses.map(a=> (a.photo && rosterPhotoFor(a.player)) ? {...a, photo:''} : a);
+  if(slim.some((a,i)=>a!==state.analyses[i]) && saveArray('futbolista-analyses', slim)) state.analyses = slim;
   state.loading = false;
   state.screen = 'dashboard';
   render();
@@ -868,7 +882,7 @@ function openAnalysis(record, goTag){
     attrs: record.attrs ? {...record.attrs} : {defensa:5,ataque:5,pase:5,velocidad:5,concentracion:5,general:5},
     fortalezas: (record.fortalezas&&record.fortalezas.length) ? record.fortalezas.slice() : [''],
     debilidades: (record.debilidades&&record.debilidades.length) ? record.debilidades.slice() : [''],
-    photo: record.photo || '',
+    photo: rosterPhotoFor(record.player) || record.photo || '',
   };
   state.log = record.log ? record.log.slice() : [];
   state.minute = state.log.length ? state.log[state.log.length-1].minute : 0;
@@ -885,7 +899,7 @@ function persistAnalysis(){
   const record = {
     id, player:s.player, team:s.team, rival:s.rival, competicion:s.competicion, date:s.date, position:s.position,
     rating: s.rating, minutesPlayed: s.minutesPlayed, attrs: {...s.attrs}, fortalezas: cleanList(s.fortalezas), debilidades: cleanList(s.debilidades),
-    photo: s.photo||'', log: state.log, savedAt: Date.now(),
+    photo: rosterPhotoFor(s.player) ? '' : (s.photo||''), log: state.log, savedAt: Date.now(),
   };
   const idx = state.analyses.findIndex(a=>a.id===id);
   if(idx>=0) state.analyses[idx]=record; else state.analyses.push(record);
@@ -1146,6 +1160,7 @@ function renderDashboard(){
         <button class="dash-secondary" id="btn-import-backup">Importar datos</button>
         <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
       </div>
+      ${(()=>{ const mb = storageUsedMB(); return `<div class="empty-hint" style="margin:-8px 0 18px;text-align:left;${mb>3.5?'color:#E3543F;':''}">Almacenamiento usado: ${mb.toFixed(1)} MB de ~5${mb>3.5?' · casi lleno, haz Exportar copia':''}</div>`; })()}
 
       ${(()=>{
         const d = loadDraft();
@@ -2047,7 +2062,7 @@ function exportPDF(){
   doc.text(pillText, pillX+pillW/2, pillY+10.5, {align:'center'});
 
   const rowBY = y+58;
-  pdfAvatar(doc, padX+15, rowBY, 15, s.photo, s.player[0], LINE_SOFT, GOLD, INK);
+  pdfAvatar(doc, padX+15, rowBY, 15, s.photo||rosterPhotoFor(s.player), s.player[0], LINE_SOFT, GOLD, INK);
 
   const nameX = padX+42;
   doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GREEN);
